@@ -1,0 +1,149 @@
+---
+title: "COVID_19"
+author: "Lapo Stopponi"
+date: "2026-04-06"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(lubridate)
+```
+
+## Importing data
+
+I am importing COVID-19 data from the Johns Hopkins University GitHub repository. To ensure the report is reproducible and efficient, I am using a custom function to load the most recent 100 days of data, which significantly reduces the memory footprint while maintaining enough data for trend analysis.
+
+```{r importing data}
+url_in <- "https://raw.githubusercontent.com/CSSEGISandData/COVID-19/master/csse_covid_19_data/csse_covid_19_time_series/"
+file_names <- c("time_series_covid19_confirmed_US.csv", 
+                "time_series_covid19_confirmed_global.csv",
+                "time_series_covid19_deaths_US.csv", 
+                "time_series_covid19_deaths_global.csv")
+urls <- str_c(url_in, file_names)
+
+load_light <- function(url) {
+  header <- read_csv(url, n_max = 0, show_col_types = FALSE)
+  n_cols <- ncol(header)
+  # We keep geographical info (first 12 columns) and the last 100 dates
+  cols_to_keep <- c(1:12, (n_cols-100):n_cols)
+  read_csv(url, show_col_types = FALSE) %>% 
+    select(any_of(cols_to_keep))
+}
+
+US_cases <- load_light(urls[1])
+global_cases <- load_light(urls[2])
+US_deaths <- load_light(urls[3])
+global_deaths <- load_light(urls[4])
+```
+
+## Tidying Global Data
+
+After looking at the global datasets, I need to transform them into a "long" format where each row represents a single date for a specific region. I will remove unnecessary geographical coordinates and combine the confirmed cases and deaths into a single unified data frame.
+
+```{r tidying global data}
+global_cases <- global_cases %>%
+    pivot_longer(cols = -c(`Province/State`, `Country/Region`, Lat, Long),
+                 names_to = "date", values_to = "cases") %>%
+    select(-c(Lat, Long))
+
+global_deaths <- global_deaths %>%
+    pivot_longer(cols = -c(`Province/State`, `Country/Region`, Lat, Long),
+                 names_to = "date", values_to = "deaths") %>%
+    select(-c(Lat, Long))
+
+global <- global_cases %>%
+    full_join(global_deaths) %>%
+    rename(Country_Region = `Country/Region`, Province_State = `Province/State`) %>%
+    mutate(date = mdy(date)) %>%
+    filter(cases > 0)
+
+rm(global_cases, global_deaths)
+```
+
+
+## Tidying US Data
+
+Similarly, I will tidy the US specific data. This dataset contains more granular infos such as county level reports and population figures. I will aggregate these by state to visualize broader trends. 
+
+```{r tidying US data}
+US_deaths <- US_deaths %>%
+    pivot_longer(cols = -(UID:Population), names_to = "date", values_to = "deaths") %>%
+    filter(deaths >= 0) %>%
+    mutate(date = mdy(date)) %>%
+    select(Admin2, Province_State, Country_Region, Combined_Key, date, deaths, Population)
+
+US_cases <- US_cases %>%
+    pivot_longer(cols = -(UID:Combined_Key), names_to = "date", values_to = "cases") %>%
+    filter(cases >= 0) %>%
+    mutate(date = mdy(date)) %>%
+    select(Admin2, Province_State, Combined_Key, date, cases)
+
+US <- US_cases %>% full_join(US_deaths)
+
+# Aggregating by state
+US_by_state <- US %>%
+    group_by(Province_State, Country_Region, date) %>%
+    summarize(cases = sum(cases, na.rm = TRUE), 
+              deaths = sum(deaths, na.rm = TRUE),
+              Population = sum(Population, na.rm = TRUE), .groups = 'drop') %>%
+    mutate(deaths_per_mill = deaths * 1000000 / Population)
+
+# National Totals
+US_totals <- US_by_state %>%
+    group_by(Country_Region, date) %>%
+    summarize(cases = sum(cases), deaths = sum(deaths),
+              Population = sum(Population), .groups = 'drop') %>%
+    mutate(deaths_per_mill = deaths * 1000000 / Population)
+
+```
+
+
+## Visualization
+
+The following chart displays the total number of confirmed COVID-19 cases versus deaths in the United States over the last 100 days. A logarithmic scale is used to better visualize the two trends together.
+
+```{r visualizations}
+US_totals %>%
+    ggplot(aes(x = date, y = cases)) +
+    geom_line(aes(color = "cases")) +
+    geom_point(aes(color = "cases")) +
+    geom_line(aes(y = deaths, color = "deaths")) +
+    geom_point(aes(y = deaths, color = "deaths")) +
+    scale_y_log10() +
+    theme(legend.position = "bottom", axis.text.x = element_text(angle = 90)) +
+    labs(title = "COVID-19 Trends in the US (Log Scale)", y = "Count")
+```
+
+## Analysis and Modeling
+
+To dive deeper, I will calculate new daily cases and deaths to understand the current velocity of the pandemic. I will also create a linear model to analyze the relationship between cases per thousand and deaths per thousand across different states.
+
+```{r analysis and modeling}
+US_state_totals <- US_by_state %>%
+    group_by(Province_State) %>%
+    summarize(deaths = max(deaths), cases = max(cases),
+              population = max(Population), .groups = 'drop') %>%
+    filter(cases > 0, population > 0) %>%
+    mutate(cases_per_thou = 1000 * cases / population,
+           deaths_per_thou = 1000 * deaths / population)
+
+mod <- lm(deaths_per_thou ~ cases_per_thou, data = US_state_totals)
+summary(mod)
+
+US_state_totals %>%
+    ggplot(aes(x = cases_per_thou, y = deaths_per_thou)) +
+    geom_point() +
+    geom_smooth(method = "lm", color = "red") +
+    labs(title = "Linear Model: Cases vs Deaths per Thousand by State")
+```
+
+
+## Bias Identification
+
+In this dataset, we must account for Reporting Bias, as testing availability varied significantly between states. Furthermore, Lag Bias is evident because deaths are often reported days after the initial positive case. Lastly, Definition Bias exists, as criteria for COVID-19 deaths may vary across jurisdictions.
+
+## Conclusion
+
+The analysis shows a consistent correlation between cumulative cases and deaths, as demonstrated by the linear model. While the data remains robust, the variations across states suggest that local healthcare infrastructure and public health policies significantly influenced the impact of the pandemic.
