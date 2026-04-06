@@ -1,0 +1,104 @@
+---
+title: "NYPD Shooting Incident"
+author: "L.Stopponi"
+date: "2026-04-03"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## R Markdown
+
+I loaded the necessary library, then I found the dataset about NYPD Shooting Incident at this link: <https://data.cityofnewyork.us/api/views/833y-fsy8/rows.csv?accessType=DOWNLOAD>. 
+The dataset contains a list of every shooting incident that occurred in NYC going back to 2006 through the end of the previous calendar year. The data was manually extracted every quarter and reviewed by the Office of Management Analysis and Planning before being posted on the NYPD website. Each record represents a shooting incident in NYC and includes information about the event, the location and time of occurrence. 
+Then I loaded it, and called head() and glimpse() on the data to get its specifics, using the following code:
+
+```{r import_data, message=FALSE}
+library(tidyverse)
+url_nypd <- "https://data.cityofnewyork.us/api/views/833y-fsy8/rows.csv?accessType=DOWNLOAD"
+nypd_data <- read_csv(url_nypd)
+head(nypd_data)
+glimpse(nypd_data)
+```
+## Tidying and Transforming data
+
+In this step, I cleaned the dataset by removing unnecessary columns such as ("Latitude", "Longitude", "Lon_Lat", "X_COORD_CD", "Y_COORD_CD"). I also worked on the date and run some checks to make sure that the data is consistent and didn't have issues. 
+During the consistency check, I found that LOC_OF_OCCUR_DESC, LOC_CLASSFCTN_DESC, and LOCATION_DESC had over 50% missing values (NAs). Therefore, I decided to remove these columns as well from the dataset, as they are not representative enough for a reliable analysis.
+In the PERP_AGE_GROUP column, both null and unknown appear, so I unified them, setting both of them to NA. Then as asked by the exercise I changed the appropriate variables ("BORO", "PRECINT", "STATISTICAL_MURDER_FLAG", "PERP AGE GROUP", "PERP_SEX", "PERP_RACE", "VIC_AGE_GROUP", "VIC_RACE") to factors. 
+
+```{r tidy_data, message=FALSE}
+library(lubridate)
+
+nypd_data <- nypd_data %>%
+  #Removing columns not relevant or with too many NA values
+  select(-c(X_COORD_CD, Y_COORD_CD, Latitude, Longitude, Lon_Lat, 
+            LOC_OF_OCCUR_DESC, LOC_CLASSFCTN_DESC, LOCATION_DESC)) %>%
+  
+  #Transforming data and unifying missing values in PERP_AGE_GROUP
+  mutate(OCCUR_DATE = mdy(OCCUR_DATE), 
+         PERP_AGE_GROUP = na_if(PERP_AGE_GROUP, "(null)"),            
+         PERP_AGE_GROUP = na_if(PERP_AGE_GROUP, "UNKNOWN")) %>%
+    
+  #Transforming appropriate variables in factors
+  mutate(across(c(BORO, 
+                  PRECINCT, 
+                  STATISTICAL_MURDER_FLAG, 
+                  PERP_AGE_GROUP, PERP_SEX, PERP_RACE, 
+                  VIC_AGE_GROUP, VIC_SEX, VIC_RACE), 
+                  as.factor))
+summary(nypd_data)
+```
+
+## Visualizations and Analysis
+
+I built two visualizations to explore the dataset. The first one,  **"Density of Shootings by the Time of the Day"**, shows the temporal distribution of incidents.  The plot reveals a clear peak in shooting during late night hours, suggesting that criminal activities are not uniformly distributed throughout the day. 
+In the second visualization, **"Distribution of NYC Shootings across Borough"**, I used a bar chart, to compare the volume of shootings. The bars are ordered by frequency and colored to distinguish fatal shootings from non fatal ones.
+To dive deeper, I also analyzed the **Lethality Rate** (Total Murders / Total Shootings). Staten Island appears to have the highest lethality rate. However, looking at the raw numbers, the sample size for Staten Island is significantly smaller than for other boroughs. This suggest that the high rate might be a statistical anomaly rather than a higher inherent risk. 
+# Model Analysis
+The logistic regression model shows that most predictors have a high p-value, indicating that they are not strong predictors of the shooting outcome. It's an important finding, suggest that the lethality on an incident depends on factors not present in the dataset. 
+```{r analysis_plots, message=FALSE}
+#Plot 1: Density of Shootings by the Time of the Day
+ggplot(nypd_data, aes(x=OCCUR_TIME)) +
+  geom_density(fill = "royalblue", alpha = 0.5) +
+  labs(title = "Density of Shootings by the Time of the Day",
+       x = "Time of Occurence",
+       y = "Density") +
+    theme_minimal()
+    
+#Plot 2: Number of incidents distributed for borough
+ggplot(nypd_data, aes(x = fct_infreq(BORO), fill = STATISTICAL_MURDER_FLAG)) +
+  geom_bar(color = "black") +
+  labs(title = "Distribution of NYC Shootings across Borough",
+  x = "Borough",
+  y = "Number of Incidents",
+  fill = "Murder?") +
+theme_minimal()
+
+
+#Table, Lethality rate by Borough
+nypd_lethality <- nypd_data %>%
+  group_by(BORO) %>%
+  summarize(
+    Total_Shootings = n(),
+    Total_Murders = sum(STATISTICAL_MURDER_FLAG == TRUE),
+    Lethality_Rate = (Total_Murders / Total_Shootings) * 100
+  ) %>%
+  arrange(desc(Lethality_Rate))
+
+nypd_lethality
+
+#Building a logistic regression model
+murder_model <- glm(STATISTICAL_MURDER_FLAG ~ BORO + OCCUR_TIME,
+                    data = nypd_data,
+                    family = "binomial")
+summary(murder_model)
+```
+
+## Bias
+There are several sources of Bias that may affect the integrity of this dataset. **The Reporting Bias**: the dataset only includes the  incidents reported or discovered by the NYPD. Shootings that did not result in a 911 call or hospital visit may be missing, potentially underrepresenting violence in certain neighborhoods. **Missing data**: An important part of the perpetrator demographics was labeled as "Unknown" or "null". Relying on this incomplete data to draw conclusions about offender profiles could lead to inaccurate social profiling. **Survivor Bias**: The Lethality Rate is based on the Statistical_murder_flag. Improvements in emergency medical response over the decades might decrease this flag's frequency, even if the number of shooting incidents remains high.**Personal Bias**: Having followed general news reports about NYC, I ha preconceived  notions of which boroughs might be "more dangerous". To mitigate this, I avoided making assumptions based on raw counts alone. 
+
+## Conclusion
+This analysis of the NYPD Shooting Incident dataset (Historic) provided significant insights into the patterns of gun violence in New York city from 2006 and 2022. The data reveals a strong temporal trend, with incidents peaking during late night hours, and a clear geographic concentration in boroughs like Brooklyn and the Bronx. While Staten Island showed a higher lethality rate, the smaller sample size suggests this may be a statistical outlier rather than a definitive trend. This project highlights the importance of data cleaning and the necessity of looking beyond absolute numbers to understand the complexity of urban safety. 
+
